@@ -108,21 +108,22 @@ pub struct NIP47Error {
 }
 
 /// Method
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum Method {
     /// Pay Invoice
+    #[serde(rename = "pay_invoice")]
     PayInvoice,
 }
 
 /// Request Params
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RequestParams {
     /// Request invoice
     pub invoice: String,
 }
 
 /// NIP47 Request
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Request {
     /// Request method
     pub method: Method,
@@ -135,14 +136,21 @@ impl Request {
     pub fn as_json(&self) -> String {
         json!(self).to_string()
     }
-
+    
     /// Deserialize from JSON string
     pub fn from_json<S>(json: S) -> Result<Self, Error>
     where
-        S: Into<String>,
+        S: AsRef<str>,
     {
-        Ok(serde_json::from_str(&json.into())?)
+        match serde_json::from_str(json.as_ref()) {
+            Ok(response) => Ok(response),
+            Err(_err) => {
+                let json = json.as_ref().replace('\\', "");
+                Ok(serde_json::from_str(&json)?)
+            }
+        }
     }
+
 }
 
 /// NIP47 Response Result
@@ -172,9 +180,15 @@ impl Response {
     /// Deserialize from JSON string
     pub fn from_json<S>(json: S) -> Result<Self, Error>
     where
-        S: Into<String>,
+        S: AsRef<str>,
     {
-        Ok(serde_json::from_str(&json.into())?)
+        match serde_json::from_str(json.as_ref()) {
+            Ok(response) => Ok(response),
+            Err(_err) => {
+                let json = json.as_ref().replace('\\', "");
+                Ok(serde_json::from_str(&json)?)
+            }
+        }
     }
 }
 
@@ -309,9 +323,7 @@ mod test {
     #[test]
     fn test_parse_uri() -> Result<()> {
         let uri = "nostr+walletconnect://b889ff5b1513b641e2a139f661a661364979c5beee91842f8f0ef42ab558e9d4?relay=wss%3A%2F%2Frelay.damus.io%2F&secret=71a8c14c1407c113601079c4302dab36460f0ccd0ad506f1f2dc73b5100e4f3c";
-        println!("{}", uri);
         let uri = NostrWalletConnectURI::from_str(uri).unwrap();
-        println!("{}", uri);
 
         let pubkey = XOnlyPublicKey::from_str(
             "b889ff5b1513b641e2a139f661a661364979c5beee91842f8f0ef42ab558e9d4",
@@ -323,6 +335,32 @@ mod test {
             uri,
             NostrWalletConnectURI::new(pubkey, relay_url, Some(secret.secret_key()?)).unwrap()
         );
+        Ok(())
+    }
+
+    #[test]
+    fn seralize_request() -> Result<()> {
+        let request = Request {
+            method: Method::PayInvoice,
+            params: RequestParams { invoice: "lnbc210n1pj99rx0pp5ehevgz9nf7d97h05fgkdeqxzytm6yuxd7048axru03fpzxxvzt7shp5gv7ef0s26pw5gy5dpwvsh6qgc8se8x2lmz2ev90l9vjqzcns6u6scqzzsxqyz5vqsp".to_string() }
+            
+        };
+
+
+        assert_eq!(Request::from_json(request.as_json()).unwrap(), request);
+
+        assert_eq!(request.as_json(), "{\"method\":\"pay_invoice\",\"params\":{\"invoice\":\"lnbc210n1pj99rx0pp5ehevgz9nf7d97h05fgkdeqxzytm6yuxd7048axru03fpzxxvzt7shp5gv7ef0s26pw5gy5dpwvsh6qgc8se8x2lmz2ev90l9vjqzcns6u6scqzzsxqyz5vqsp\"}}");
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_request() -> Result<()> {
+        let request = "{\\\"params\\\":{\\\"invoice\\\":\\\"lnbc210n1pj99rx0pp5ehevgz9nf7d97h05fgkdeqxzytm6yuxd7048axru03fpzxxvzt7shp5gv7ef0s26pw5gy5dpwvsh6qgc8se8x2lmz2ev90l9vjqzcns6u6scqzzsxqyz5vqsp5rdjyt9jr2avv2runy330766avkweqp30ndnyt9x6dp5juzn7q0nq9qyyssq2mykpgu04q0hlga228kx9v95meaqzk8a9cnvya305l4c353u3h04azuh9hsmd503x6jlzjrsqzark5dxx30s46vuatwzjhzmkt3j4tgqu35rms\\\"},\\\"method\\\":\\\"pay_invoice\\\"}";
+
+        let request = Request::from_json(request).unwrap();
+
+        assert_eq!(request.method, Method::PayInvoice);
+        assert_eq!(request.params.invoice, "lnbc210n1pj99rx0pp5ehevgz9nf7d97h05fgkdeqxzytm6yuxd7048axru03fpzxxvzt7shp5gv7ef0s26pw5gy5dpwvsh6qgc8se8x2lmz2ev90l9vjqzcns6u6scqzzsxqyz5vqsp5rdjyt9jr2avv2runy330766avkweqp30ndnyt9x6dp5juzn7q0nq9qyyssq2mykpgu04q0hlga228kx9v95meaqzk8a9cnvya305l4c353u3h04azuh9hsmd503x6jlzjrsqzark5dxx30s46vuatwzjhzmkt3j4tgqu35rms".to_string());
         Ok(())
     }
 }
