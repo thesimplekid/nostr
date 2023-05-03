@@ -9,15 +9,14 @@ use std::borrow::Cow;
 use std::fmt;
 use std::str::FromStr;
 
-use rand::Rng;
-use secp256k1::{rand, XOnlyPublicKey};
+use secp256k1::{SecretKey, XOnlyPublicKey};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use url::form_urlencoded::byte_serialize;
 use url::Url;
 
 use super::nip04;
-use crate::key;
+use crate::{key, Keys};
 
 /// NIP47 error
 #[derive(Debug)]
@@ -61,6 +60,12 @@ impl From<url::ParseError> for Error {
 impl From<secp256k1::Error> for Error {
     fn from(e: secp256k1::Error) -> Self {
         Self::Secp256k1(e)
+    }
+}
+
+impl From<key::Error> for Error {
+    fn from(e: key::Error) -> Self {
+        Self::Key(e)
     }
 }
 
@@ -159,7 +164,7 @@ pub struct Response {
 }
 
 impl Response {
-    /// Serialize [`Message`] as JSON string
+    /// Serialize [`Response`] as JSON string
     pub fn as_json(&self) -> String {
         json!(self).to_string()
     }
@@ -172,6 +177,10 @@ impl Response {
         Ok(serde_json::from_str(&json.into())?)
     }
 }
+
+/// Nostr Wallet Connect Info
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct NostrWalletConnectInfo {}
 
 fn url_encode<T>(data: T) -> String
 where
@@ -191,29 +200,29 @@ pub struct NostrWalletConnectURI {
     /// URL of the relay of choice where the `App` is connected and the `Signer` must send and listen for messages.
     pub relay_url: Url,
     /// 32-byte randomly generated hex encoded string
-    pub secret: String,
+    pub secret: SecretKey,
 }
 
 impl NostrWalletConnectURI {
     /// Create new [`NostrWalletConnectURI`]
-    pub fn new<S>(public_key: XOnlyPublicKey, relay_url: Url, secret: Option<S>) -> Self
-    where
-        S: Into<String>,
-    {
+    pub fn new(
+        public_key: XOnlyPublicKey,
+        relay_url: Url,
+        secret: Option<SecretKey>,
+    ) -> Result<Self, Error> {
         let secret = match secret {
-            Some(secret) => secret.into(),
+            Some(secret) => secret,
             None => {
-                let mut rng = rand::thread_rng();
-                let bytes = rng.gen::<[u8; 32]>();
-                hex::encode(bytes)
+                let keys = Keys::generate();
+                keys.secret_key()?
             }
         };
 
-        Self {
+        Ok(Self {
             public_key,
             relay_url,
             secret,
-        }
+        })
     }
 }
 
@@ -230,7 +239,7 @@ impl FromStr for NostrWalletConnectURI {
             let public_key = XOnlyPublicKey::from_str(pubkey)?;
 
             let mut relay_url: Option<Url> = None;
-            let mut secret: Option<String> = None;
+            let mut secret: Option<SecretKey> = None;
 
             for (key, value) in url.query_pairs() {
                 match key {
@@ -240,7 +249,7 @@ impl FromStr for NostrWalletConnectURI {
                     }
                     Cow::Borrowed("secret") => {
                         let value = value.to_string();
-                        secret = Some(serde_json::from_str(&format!("\"{}\"", value))?);
+                        secret = Some(SecretKey::from_str(&value)?);
                     }
                     _ => (),
                 }
@@ -268,7 +277,7 @@ impl fmt::Display for NostrWalletConnectURI {
             "{NOSTR_WALLET_CONNECT_URI_SCHEME}://{}?relay={}&secret={}",
             self.public_key,
             url_encode(self.relay_url.to_string()),
-            url_encode(self.secret.clone())
+            url_encode(self.secret.display_secret().to_string())
         )
     }
 }
@@ -278,7 +287,7 @@ mod test {
     use std::str::FromStr;
 
     use super::*;
-    use crate::Result;
+    use crate::{key::FromSkStr, Result};
 
     #[test]
     fn test_uri() -> Result<()> {
@@ -286,8 +295,10 @@ mod test {
             "b889ff5b1513b641e2a139f661a661364979c5beee91842f8f0ef42ab558e9d4",
         )?;
         let relay_url = Url::parse("wss://relay.damus.io")?;
-        let secret = "71a8c14c1407c113601079c4302dab36460f0ccd0ad506f1f2dc73b5100e4f3c";
-        let uri = NostrWalletConnectURI::new(pubkey, relay_url, Some(secret));
+        let secret =
+            Keys::from_sk_str("71a8c14c1407c113601079c4302dab36460f0ccd0ad506f1f2dc73b5100e4f3c")?;
+        let uri =
+            NostrWalletConnectURI::new(pubkey, relay_url, Some(secret.secret_key()?)).unwrap();
         assert_eq!(
             uri.to_string(),
             "nostr+walletconnect://b889ff5b1513b641e2a139f661a661364979c5beee91842f8f0ef42ab558e9d4?relay=wss%3A%2F%2Frelay.damus.io%2F&secret=71a8c14c1407c113601079c4302dab36460f0ccd0ad506f1f2dc73b5100e4f3c".to_string()
@@ -298,16 +309,19 @@ mod test {
     #[test]
     fn test_parse_uri() -> Result<()> {
         let uri = "nostr+walletconnect://b889ff5b1513b641e2a139f661a661364979c5beee91842f8f0ef42ab558e9d4?relay=wss%3A%2F%2Frelay.damus.io%2F&secret=71a8c14c1407c113601079c4302dab36460f0ccd0ad506f1f2dc73b5100e4f3c";
+        println!("{}", uri);
         let uri = NostrWalletConnectURI::from_str(uri).unwrap();
+        println!("{}", uri);
 
         let pubkey = XOnlyPublicKey::from_str(
             "b889ff5b1513b641e2a139f661a661364979c5beee91842f8f0ef42ab558e9d4",
         )?;
         let relay_url = Url::parse("wss://relay.damus.io")?;
-        let secret = "71a8c14c1407c113601079c4302dab36460f0ccd0ad506f1f2dc73b5100e4f3c".to_string();
+        let secret =
+            Keys::from_sk_str("71a8c14c1407c113601079c4302dab36460f0ccd0ad506f1f2dc73b5100e4f3c")?;
         assert_eq!(
             uri,
-            NostrWalletConnectURI::new(pubkey, relay_url, Some(secret))
+            NostrWalletConnectURI::new(pubkey, relay_url, Some(secret.secret_key()?)).unwrap()
         );
         Ok(())
     }
