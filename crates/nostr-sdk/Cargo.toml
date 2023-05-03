@@ -23,6 +23,7 @@ nip06 = ["nostr/nip06"]
 nip11 = ["nostr/nip11"]
 nip19 = ["nostr/nip19"]
 nip46 = ["nostr/nip46"]
+nip47 = ["nostr/nip47"]
 
 [dependencies]
 log = "0.4"

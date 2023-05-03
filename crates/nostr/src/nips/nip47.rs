@@ -1,0 +1,314 @@
+// Copyright (c) 2022-2023 Yuki Kishimoto
+// Distributed under the MIT software license
+
+//! NIP47
+//!
+//! <https://github.com/nostr-protocol/nips/blob/master/47.md>
+
+use std::borrow::Cow;
+use std::fmt;
+use std::str::FromStr;
+
+use rand::Rng;
+use secp256k1::{rand, XOnlyPublicKey};
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+use url::form_urlencoded::byte_serialize;
+use url::Url;
+
+use super::nip04;
+use crate::key;
+
+/// NIP47 error
+#[derive(Debug)]
+pub enum Error {
+    /// Key error
+    Key(key::Error),
+    /// JSON error
+    JSON(serde_json::Error),
+    /// Url parse error
+    Url(url::ParseError),
+    /// Secp256k1 error
+    Secp256k1(secp256k1::Error),
+    /// NIP04 error
+    NIP04(nip04::Error),
+    /// Unsigned event error
+    UnsignedEvent(crate::event::unsigned::Error),
+    /// Invalid request
+    InvalidRequest,
+    /// Too many/few params
+    InvalidParamsLength,
+    /// Unsupported method
+    UnsupportedMethod(String),
+    /// Invalid URI
+    InvalidURI,
+    /// Invalid URI scheme
+    InvalidURIScheme,
+}
+
+impl From<serde_json::Error> for Error {
+    fn from(e: serde_json::Error) -> Self {
+        Self::JSON(e)
+    }
+}
+
+impl From<url::ParseError> for Error {
+    fn from(e: url::ParseError) -> Self {
+        Self::Url(e)
+    }
+}
+
+impl From<secp256k1::Error> for Error {
+    fn from(e: secp256k1::Error) -> Self {
+        Self::Secp256k1(e)
+    }
+}
+
+/// NIP47 Response Error codes
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ErrorCode {
+    ///  The client is sending commands too fast.
+    #[serde(rename = "RATE_LIMITED")]
+    RateLimited,
+    /// The command is not known of is intentionally not implemented
+    #[serde(rename = "NOT_IMPLMENTED")]
+    NotImplemnted,
+    /// The wallet does not have enough funds to cover a fee reserve or the payment amount
+    #[serde(rename = "INSUFFICIENT_BALANCE")]
+    InsufficantBalance,
+    /// The wallet has exceeded its spending quota
+    #[serde(rename = "QUOTA_EXCEEDED")]
+    QuotaExceeded,
+    /// This public key is not allowed to do this operation
+    #[serde(rename = "RESTRICTED")]
+    Restricted,
+    /// This public key has no wallet connected
+    #[serde(rename = "UNAUTHORIZED")]
+    Unauthorized,
+    /// An internal error
+    #[serde(rename = "INTERNAL")]
+    Internal,
+    /// Other error
+    #[serde(rename = "OTHER")]
+    Other,
+}
+
+/// NIP47 Error message
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NIP47Error {
+    /// Error Code
+    pub code: ErrorCode,
+    /// Human Readable error message
+    pub message: String,
+}
+
+/// Method
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum Method {
+    /// Pay Invoice
+    PayInvoice,
+}
+
+/// Request Params
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RequestParams {
+    /// Request invoice
+    pub invoice: String,
+}
+
+/// NIP47 Request
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Request {
+    /// Request method
+    pub method: Method,
+    /// Params
+    pub params: RequestParams,
+}
+
+impl Request {
+    /// Serialize [`Message`] as JSON string
+    pub fn as_json(&self) -> String {
+        json!(self).to_string()
+    }
+
+    /// Deserialize from JSON string
+    pub fn from_json<S>(json: S) -> Result<Self, Error>
+    where
+        S: Into<String>,
+    {
+        Ok(serde_json::from_str(&json.into())?)
+    }
+}
+
+/// NIP47 Response Result
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResponseResult {
+    /// Response preimage
+    pub preimage: String,
+}
+
+/// NIP47 Response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Response {
+    /// Request Method
+    pub result_type: Method,
+    /// NIP47 Error
+    pub error: Option<NIP47Error>,
+    /// NIP47 Result
+    pub result: Option<ResponseResult>,
+}
+
+impl Response {
+    /// Serialize [`Message`] as JSON string
+    pub fn as_json(&self) -> String {
+        json!(self).to_string()
+    }
+
+    /// Deserialize from JSON string
+    pub fn from_json<S>(json: S) -> Result<Self, Error>
+    where
+        S: Into<String>,
+    {
+        Ok(serde_json::from_str(&json.into())?)
+    }
+}
+
+fn url_encode<T>(data: T) -> String
+where
+    T: AsRef<[u8]>,
+{
+    byte_serialize(data.as_ref()).collect()
+}
+
+/// NIP46 URI Scheme
+pub const NOSTR_WALLET_CONNECT_URI_SCHEME: &str = "nostr+walletconnect";
+
+/// Nostr Connect URI
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct NostrWalletConnectURI {
+    /// App Pubkey
+    pub public_key: XOnlyPublicKey,
+    /// URL of the relay of choice where the `App` is connected and the `Signer` must send and listen for messages.
+    pub relay_url: Url,
+    /// 32-byte randomly generated hex encoded string
+    pub secret: String,
+}
+
+impl NostrWalletConnectURI {
+    /// Create new [`NostrWalletConnectURI`]
+    pub fn new<S>(public_key: XOnlyPublicKey, relay_url: Url, secret: Option<S>) -> Self
+    where
+        S: Into<String>,
+    {
+        let secret = match secret {
+            Some(secret) => secret.into(),
+            None => {
+                let mut rng = rand::thread_rng();
+                let bytes = rng.gen::<[u8; 32]>();
+                hex::encode(bytes)
+            }
+        };
+
+        Self {
+            public_key,
+            relay_url,
+            secret,
+        }
+    }
+}
+
+impl FromStr for NostrWalletConnectURI {
+    type Err = Error;
+    fn from_str(uri: &str) -> Result<Self, Self::Err> {
+        let url = Url::parse(uri)?;
+
+        if url.scheme() != NOSTR_WALLET_CONNECT_URI_SCHEME {
+            return Err(Error::InvalidURIScheme);
+        }
+
+        if let Some(pubkey) = url.domain() {
+            let public_key = XOnlyPublicKey::from_str(pubkey)?;
+
+            let mut relay_url: Option<Url> = None;
+            let mut secret: Option<String> = None;
+
+            for (key, value) in url.query_pairs() {
+                match key {
+                    Cow::Borrowed("relay") => {
+                        let value = value.to_string();
+                        relay_url = Some(Url::parse(&value)?);
+                    }
+                    Cow::Borrowed("secret") => {
+                        let value = value.to_string();
+                        secret = Some(serde_json::from_str(&format!("\"{}\"", value))?);
+                    }
+                    _ => (),
+                }
+            }
+
+            if let Some(relay_url) = relay_url {
+                if let Some(secret) = secret {
+                    return Ok(Self {
+                        public_key,
+                        relay_url,
+                        secret,
+                    });
+                }
+            }
+        }
+
+        Err(Error::InvalidURI)
+    }
+}
+
+impl fmt::Display for NostrWalletConnectURI {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{NOSTR_WALLET_CONNECT_URI_SCHEME}://{}?relay={}&secret={}",
+            self.public_key,
+            url_encode(self.relay_url.to_string()),
+            url_encode(self.secret.clone())
+        )
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use std::str::FromStr;
+
+    use super::*;
+    use crate::Result;
+
+    #[test]
+    fn test_uri() -> Result<()> {
+        let pubkey = XOnlyPublicKey::from_str(
+            "b889ff5b1513b641e2a139f661a661364979c5beee91842f8f0ef42ab558e9d4",
+        )?;
+        let relay_url = Url::parse("wss://relay.damus.io")?;
+        let secret = "71a8c14c1407c113601079c4302dab36460f0ccd0ad506f1f2dc73b5100e4f3c";
+        let uri = NostrWalletConnectURI::new(pubkey, relay_url, Some(secret));
+        assert_eq!(
+            uri.to_string(),
+            "nostr+walletconnect://b889ff5b1513b641e2a139f661a661364979c5beee91842f8f0ef42ab558e9d4?relay=wss%3A%2F%2Frelay.damus.io%2F&secret=71a8c14c1407c113601079c4302dab36460f0ccd0ad506f1f2dc73b5100e4f3c".to_string()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_uri() -> Result<()> {
+        let uri = "nostr+walletconnect://b889ff5b1513b641e2a139f661a661364979c5beee91842f8f0ef42ab558e9d4?relay=wss%3A%2F%2Frelay.damus.io%2F&secret=71a8c14c1407c113601079c4302dab36460f0ccd0ad506f1f2dc73b5100e4f3c";
+        let uri = NostrWalletConnectURI::from_str(uri).unwrap();
+
+        let pubkey = XOnlyPublicKey::from_str(
+            "b889ff5b1513b641e2a139f661a661364979c5beee91842f8f0ef42ab558e9d4",
+        )?;
+        let relay_url = Url::parse("wss://relay.damus.io")?;
+        let secret = "71a8c14c1407c113601079c4302dab36460f0ccd0ad506f1f2dc73b5100e4f3c".to_string();
+        assert_eq!(
+            uri,
+            NostrWalletConnectURI::new(pubkey, relay_url, Some(secret))
+        );
+        Ok(())
+    }
+}
