@@ -45,6 +45,26 @@ pub enum Error {
     InvalidURIScheme,
 }
 
+impl std::error::Error for Error {}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Key(e) => write!(f, "{e}"),
+            Self::JSON(e) => write!(f, "{e}"),
+            Self::Url(e) => write!(f, "{e}"),
+            Self::Secp256k1(e) => write!(f, "{e}"),
+            Self::NIP04(e) => write!(f, "{e}"),
+            Self::UnsignedEvent(e) => write!(f, "{e}"),
+            Self::InvalidRequest => write!(f, "Invalid NIP47 Request"),
+            Self::InvalidParamsLength => write!(f, "Invalid NIP47 Params length"),
+            Self::UnsupportedMethod(e) => write!(f, "{e}"),
+            Self::InvalidURI => write!(f, "Invalid NIP47 URI"),
+            Self::InvalidURIScheme => write!(f, "Invalid NIP47 URI Scheme"),
+        }
+    }
+}
+
 impl From<serde_json::Error> for Error {
     fn from(e: serde_json::Error) -> Self {
         Self::JSON(e)
@@ -312,7 +332,7 @@ mod test {
         let secret =
             Keys::from_sk_str("71a8c14c1407c113601079c4302dab36460f0ccd0ad506f1f2dc73b5100e4f3c")?;
         let uri =
-            NostrWalletConnectURI::new(pubkey, relay_url, Some(secret.secret_key()?)).unwrap();
+            NostrWalletConnectURI::new(pubkey, relay_url, Some(secret.secret_key()?))?;
         assert_eq!(
             uri.to_string(),
             "nostr+walletconnect://b889ff5b1513b641e2a139f661a661364979c5beee91842f8f0ef42ab558e9d4?relay=wss%3A%2F%2Frelay.damus.io%2F&secret=71a8c14c1407c113601079c4302dab36460f0ccd0ad506f1f2dc73b5100e4f3c".to_string()
@@ -323,7 +343,7 @@ mod test {
     #[test]
     fn test_parse_uri() -> Result<()> {
         let uri = "nostr+walletconnect://b889ff5b1513b641e2a139f661a661364979c5beee91842f8f0ef42ab558e9d4?relay=wss%3A%2F%2Frelay.damus.io%2F&secret=71a8c14c1407c113601079c4302dab36460f0ccd0ad506f1f2dc73b5100e4f3c";
-        let uri = NostrWalletConnectURI::from_str(uri).unwrap();
+        let uri = NostrWalletConnectURI::from_str(uri)?;
 
         let pubkey = XOnlyPublicKey::from_str(
             "b889ff5b1513b641e2a139f661a661364979c5beee91842f8f0ef42ab558e9d4",
